@@ -8,4 +8,4 @@ mkdir build<br>
 cd build<br>
 cmake ..<br>
 make<br>
-./${folder_name} img<br>
+./${folder_name} file<br>

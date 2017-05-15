@@ -12,6 +12,9 @@
 #include <vtkPNGReader.h>
 #include <vtkInteractorStyleTrackballCamera.h>
 #include <vtkObjectFactory.h>
+#include <vtkSliderWidget.h>
+#include <vtkSliderRepresentation3D.h>
+#include <vtkSliderWidget.h>
 
 #include "itkImage.h"
 #include "itkImageFileReader.h"
@@ -19,6 +22,8 @@
 #include "itkFlipImageFilter.h"
 #include "itkImageToVTKImageFilter.h"
 #include "itkScalarToRGBColormapImageFilter.h"
+#include "itkBilateralImageFilter.h"
+#include "itkImageDuplicator.h"
 
 #include "itksys/SystemTools.hxx"
 #include <sstream>
@@ -26,13 +31,16 @@
 #include "QuickView.h"
 
 typedef itk::Image<unsigned char, 2> ImageType;
-typedef itk::RGBPixel<unsigned char>    RGBPixelType;
-typedef itk::Image<RGBPixelType, 2>  RGBImageType;
-
+typedef itk::RGBPixel<unsigned char> RGBPixelType;
+typedef itk::Image<RGBPixelType, 2> RGBImageType;
+typedef itk::ConfidenceConnectedImageFilter<ImageType, ImageType> ConfidenceConnectedFilterType;
+typedef itk::ScalarToRGBColormapImageFilter<ImageType, RGBImageType> RGBFilterType;
 
 namespace team_wind
 {
 double picked[3] = {0, 0, 0};
+ConfidenceConnectedFilterType::Pointer confidenceConnectedFilter = ConfidenceConnectedFilterType::New();
+RGBFilterType::Pointer rgb_filter = RGBFilterType::New();
 }
 // Define interaction style
 class MouseInteractorStylePP : public vtkInteractorStyleTrackballCamera
@@ -51,6 +59,18 @@ class MouseInteractorStylePP : public vtkInteractorStyleTrackballCamera
         this->Interactor->GetPicker()->GetPickPosition(team_wind::picked);
         std::cout << "Picked value: " << team_wind::picked[0] << " " << team_wind::picked[1] << " " << team_wind::picked[2] << std::endl;
 
+        // Set seed
+        ImageType::IndexType seed;
+        seed[0] = team_wind::picked[0];
+        seed[1] = team_wind::picked[1];
+        team_wind::confidenceConnectedFilter->SetSeed(seed);
+        team_wind::confidenceConnectedFilter->Update();
+
+        QuickView viewer;
+        team_wind::rgb_filter->Update();
+        viewer.AddImage(team_wind::rgb_filter->GetOutput(), false);
+
+        viewer.Visualize();
         vtkInteractorStyleTrackballCamera::OnLeftButtonDown();
     }
 };
@@ -72,69 +92,35 @@ int main(int argc, char *argv[])
     reader->SetFileName(inputFileName.c_str());
     reader->Update();
 
+    double rangeSigma = 2.0;
+    double domainSigma = 2.0;
+    typedef itk::BilateralImageFilter<
+        ImageType, ImageType>
+        Bilateral_filter_t;
+    Bilateral_filter_t::Pointer bilateral_filter = Bilateral_filter_t::New();
+    bilateral_filter->SetInput(reader->GetOutput());
+    bilateral_filter->SetDomainSigma(domainSigma);
+    bilateral_filter->SetRangeSigma(rangeSigma);
+
     /* get orginal */
     bool flip_axes[2] = {0, 1};
     typedef itk::FlipImageFilter<ImageType> flip_img_t;
     flip_img_t::Pointer flip_filter = flip_img_t::New();
-    flip_filter->SetInput(reader->GetOutput());
+    flip_filter->SetInput(bilateral_filter->GetOutput());
     flip_filter->SetFlipAxes(flip_axes);
 
-    /*
-    typedef itk::ConfidenceConnectedImageFilter<ImageType, ImageType> ConfidenceConnectedFilterType;
-    ConfidenceConnectedFilterType::Pointer confidenceConnectedFilter = ConfidenceConnectedFilterType::New();
-    confidenceConnectedFilter->SetInitialNeighborhoodRadius(3);
-    confidenceConnectedFilter->SetMultiplier(3);
-    confidenceConnectedFilter->SetNumberOfIterations(25);
-    confidenceConnectedFilter->SetReplaceValue(255);
+    itk::SmartPointer<ImageType> flip_img = flip_filter->GetOutput();
+    team_wind::confidenceConnectedFilter->SetInitialNeighborhoodRadius(2);
+    team_wind::confidenceConnectedFilter->SetMultiplier(2.5);
+    team_wind::confidenceConnectedFilter->SetNumberOfIterations(5);
+    team_wind::confidenceConnectedFilter->SetInput(flip_img);
 
-    // Set seed
-    ImageType::IndexType seed;
-    seed[0] = atoi(argv[2]);
-    seed[1] = atoi(argv[3]);
-    confidenceConnectedFilter->SetSeed(seed);
-    confidenceConnectedFilter->SetInput(flip_filter->GetOutput());
-*/
-    /*
-    QuickView viewer;
-
-    viewer.AddImage<ImageType>(
-        flip_filter->GetOutput(), false,
-        itksys::SystemTools::GetFilenameName(inputFileName));
-
-    std::stringstream desc;
-    desc << "ConfidenceConnected Seed: " << seed[0] << ", " << seed[1];
-    viewer.AddImage(
-        confidenceConnectedFilter->GetOutput(),
-        false,
-        desc.str());
-
-    viewer.Visualize();
-
-    if (argc != 2)
-    {
-        std::cout << "Usage: " << argv[0]
-                  << " Filename(png)" << std::endl;
-        return EXIT_FAILURE;
-    }
-
-    //Parse input argument
-    std::string inputFilename = argv[1];
-
-    //Read the image
-    vtkSmartPointer<vtkPNGReader> img =
-        vtkSmartPointer<vtkPNGReader>::New();
-    if (!img->CanReadFile(inputFilename.c_str()))
-    {
-        std::cout << argv[0] << ": Error reading file "
-                  << inputFilename << endl
-                  << "Exiting..." << endl;
-        return EXIT_FAILURE;
-    }
-    img->SetFileName(inputFilename.c_str());
-*/
+    team_wind::rgb_filter->SetInput(team_wind::confidenceConnectedFilter->GetOutput());
+    team_wind::rgb_filter->SetColormap(RGBFilterType::Red);
+    /**********/
     typedef itk::ImageToVTKImageFilter<ImageType> FilterType;
     FilterType::Pointer filter = FilterType::New();
-    filter->SetInput(flip_filter->GetOutput());
+    filter->SetInput(flip_img);
     try
     {
         filter->Update();
@@ -145,8 +131,9 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     vtkImageData *vtk_img = filter->GetOutput();
-    vtk_img->SetOrigin(0, 0, 0);
+    filter->SetInput(reader->GetOutput());
 
+    vtk_img->SetOrigin(0, 0, 0);
     vtkSmartPointer<vtkPointPicker> pointPicker =
         vtkSmartPointer<vtkPointPicker>::New();
 
@@ -156,11 +143,13 @@ int main(int argc, char *argv[])
     imageViewer->SetSize(600, 600);
 
     // Create a renderer, render window, and interactor
-    vtkSmartPointer<vtkRenderer> renderer = imageViewer->GetRenderer();
-    renderer->GradientBackgroundOn();
-    renderer->SetBackground(0, 0, 0);
-    renderer->SetBackground2(1, 1, 1);
-    renderer->ResetCamera();
+    vtkSmartPointer<vtkRenderWindow> renderWindow = imageViewer->GetRenderWindow();
+
+    vtkSmartPointer<vtkRenderer> left_renderer = imageViewer->GetRenderer();
+    left_renderer->GradientBackgroundOn();
+    left_renderer->SetBackground(0, 0, 0);
+    left_renderer->SetBackground2(1, 1, 1);
+    left_renderer->ResetCamera();
 
     vtkSmartPointer<vtkRenderWindowInteractor> renderWindowInteractor =
         vtkSmartPointer<vtkRenderWindowInteractor>::New();
@@ -173,34 +162,8 @@ int main(int argc, char *argv[])
         vtkSmartPointer<MouseInteractorStylePP>::New();
     renderWindowInteractor->SetInteractorStyle(style);
 
-    // Add the actor to the scene
-    renderer->SetBackground(1, 1, 1); // Background color white
-    renderer->ResetCamera();
     // Render and interact
     renderWindowInteractor->Start();
-
-    typedef itk::ConfidenceConnectedImageFilter<ImageType, ImageType> ConfidenceConnectedFilterType;
-    ConfidenceConnectedFilterType::Pointer confidenceConnectedFilter = ConfidenceConnectedFilterType::New();
-    confidenceConnectedFilter->SetInitialNeighborhoodRadius(3);
-    confidenceConnectedFilter->SetMultiplier(3);
-    confidenceConnectedFilter->SetNumberOfIterations(25);
-    //confidenceConnectedFilter->SetReplaceValue(50);
-
-    // Set seed
-    ImageType::IndexType seed;
-    seed[0] = team_wind::picked[0];
-    seed[1] = team_wind::picked[1];
-    confidenceConnectedFilter->SetSeed(seed);
-    confidenceConnectedFilter->SetInput(flip_filter->GetOutput());
-
-    typedef itk::ScalarToRGBColormapImageFilter<ImageType, RGBImageType> RGBFilterType;
-    RGBFilterType::Pointer rgb_filter = RGBFilterType::New();
-    rgb_filter->SetInput(confidenceConnectedFilter->GetOutput());
-    rgb_filter->SetColormap(RGBFilterType::Red);
-    QuickView viewer;
-    viewer.AddImage(flip_filter->GetOutput(), false, "Original Image");
-    viewer.AddImage(rgb_filter->GetOutput(), false, "Extracted region");
-    viewer.Visualize();
 
     return EXIT_SUCCESS;
 }
